@@ -1,6 +1,6 @@
 import streamlit as st
 import os
-from google import genai
+import google.genai as genai
 from google.genai import types
 
 st.set_page_config(page_title="Gemini Chat App", page_icon="💬", layout="centered")
