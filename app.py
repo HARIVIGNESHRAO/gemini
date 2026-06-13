@@ -1,60 +1,71 @@
 import streamlit as st
-import requests
 import os
-from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 
-load_dotenv()
-API_BASE = os.getenv("API_BASE", "http://localhost:8000")
+st.set_page_config(page_title="Gemini Chat App", page_icon="💬", layout="centered")
+st.title("💬 Gemini AI Chat")
 
-st.set_page_config(page_title="AI Chat", layout="wide")
-st.title("🤖 Mini AI Chat App - Gemini")
+# --- 1. SET UP THE GEMINI API CLIENT ---
+# Streamlit reads this from your "Advanced Settings -> Secrets" on the dashboard
+api_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
 
-# Sidebar
-st.sidebar.header("💬 Chat Threads")
+if not api_key:
+    st.info("💡 Please add your GEMINI_API_KEY to continue.", icon="🔑")
+    api_key = st.sidebar.text_input("Gemini API Key", type="password")
+    if not api_key:
+        st.stop()
 
-def get_threads():
-    try:
-        return requests.get(f"{API_BASE}/threads/").json()
-    except:
-        return []
+# Initialize the official Google GenAI Client
+@st.cache_resource
+def get_genai_client(key: str):
+    return genai.Client(api_key=key)
 
-# New Chat Button
-if st.sidebar.button("➕ New Chat", use_container_width=True):
-    requests.post(f"{API_BASE}/threads/")
-    st.rerun()
+client = get_genai_client(api_key)
 
-# List existing threads
-threads = get_threads()
-for thread in threads:
-    if st.sidebar.button(
-        thread.get("title", f"Chat {thread['id']}"), 
-        key=f"t_{thread['id']}",
-        use_container_width=True
-    ):
-        st.session_state.current_thread = thread['id']
-        st.rerun()
+# --- 2. INITIALIZE IN-MEMORY CHAT HISTORY ---
+# This acts as your temporary database directly inside the browser session
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# Main Chat Area
-current_thread = st.session_state.get("current_thread")
+# --- 3. RENDER THE EXISTING CONVERSATION ---
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-if current_thread:
-    try:
-        msgs = requests.get(f"{API_BASE}/threads/{current_thread}/messages").json()
-    except:
-        msgs = []
+# --- 4. HANDLE NEW MESSAGES ---
+if user_input := st.chat_input("What is on your mind?"):
+    # Immediately show what the user typed
+    with st.chat_message("user"):
+        st.markdown(user_input)
+    
+    # Save user message to our session state list
+    st.session_state.messages.append({"role": "user", "content": user_input})
 
-    for msg in msgs:
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+    # Convert the session history into the precise format the new SDK expects
+    contents = []
+    for msg in st.session_state.messages:
+        sdk_role = "user" if msg["role"] == "user" else "model"
+        contents.append(
+            types.Content(
+                role=sdk_role,
+                parts=[types.Part.from_text(text=msg["content"])]
+            )
+        )
 
-    if prompt := st.chat_input("Type your message..."):
-        with st.spinner("🤔 Gemini is thinking..."):
+    # Stream or generate assistant response directly from the cloud client
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
             try:
-                requests.post(f"{API_BASE}/chat", 
-                            json={"thread_id": current_thread, "message": prompt})
-            except:
-                st.error("Backend not running!")
-        st.rerun()
-else:
-    st.info("👈 Click **New Chat** or select a thread from the sidebar to start chatting")
-    st.caption("Powered by Google Gemini 1.5 Flash (Free)")
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=contents
+                )
+                reply_text = response.text
+                st.markdown(reply_text)
+                
+                # Save assistant reply to session state
+                st.session_state.messages.append({"role": "assistant", "content": reply_text})
+                
+            except Exception as e:
+                st.error(f"Gemini API Error: {str(e)}")
